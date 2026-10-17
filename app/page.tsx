@@ -1,51 +1,42 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Result, StreamEvent } from "@/lib/types.ts";
 import { EvalView } from "./components/EvalView.tsx";
 import { ResultView } from "./components/ResultView.tsx";
 
 const REPO_URL = "https://github.com/ychuangab/maint-km-rag";
 
-const EXAMPLES: { kind: string; q: string }[] = [
-  { kind: "直接問法", q: "螺旋空壓機一直跳E-04高溫停機要怎麼查？" },
-  { kind: "換句話說", q: "履帶運轉時總是歪向一側摩擦外框且發出刮削聲該如何調整？" },
-  { kind: "同廠查無", q: "三廠的天車主卷揚煞車打滑怎麼處理？" },
-  { kind: "指定廠別", q: "二廠冰水主機冰水不冷、壓力偏低要從哪裡查？" },
-  { kind: "離題", q: "今天中午要吃什麼？" },
+const SUGGESTIONS = [
+  { t: "螺旋空壓機一直跳 E-04 高溫停機", s: "直接問法", q: "螺旋空壓機一直跳E-04高溫停機要怎麼查？" },
+  { t: "履帶總是歪向一側、摩擦外框", s: "換句話說，沒提到設備名稱", q: "履帶運轉時總是歪向一側摩擦外框且發出刮削聲該如何調整？" },
+  { t: "三廠的天車主卷揚煞車打滑", s: "三廠沒有天車，改列他廠經驗", q: "三廠的天車主卷揚煞車打滑怎麼處理？" },
+  { t: "今天中午要吃什麼？", s: "離題，應回覆查無", q: "今天中午要吃什麼？" },
 ];
 
-type Stage = "retrieve" | "rerank" | "synthesize";
-const STEPS: { key: Stage; name: string; desc: string }[] = [
-  { key: "retrieve", name: "混合檢索", desc: "BM25 關鍵字與向量語意各取前 30 筆，RRF 加權融合" },
-  { key: "rerank", name: "重排與門檻", desc: "LLM 依問題為候選打分，低於門檻視為無關" },
-  { key: "synthesize", name: "綜合研判", desc: "歸納原因與處理步驟，每點標註引用列號" },
-];
-type StepState = Record<Stage, { status: "idle" | "running" | "done"; detail?: string }>;
-const idle = (): StepState => ({ retrieve: { status: "idle" }, rerank: { status: "idle" }, synthesize: { status: "idle" } });
+const STAGE_TEXT: { [k: string]: string } = { retrieve: "混合檢索", rerank: "重排與門檻", synthesize: "綜合研判" };
+
+type Turn = { id: number; q: string; status: string[]; result?: Result; error?: string };
 
 export default function Page() {
-  const [tab, setTab] = useState<"ask" | "eval">("ask");
-  const [query, setQuery] = useState("");
-  const [steps, setSteps] = useState<StepState>(idle);
+  const [view, setView] = useState<"chat" | "eval">("chat");
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<Result | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const bottom = useRef<HTMLDivElement>(null);
+  const autoRan = useRef(false);
+
+  const update = (id: number, f: (t: Turn) => Turn) => setTurns((ts) => ts.map((t) => (t.id === id ? f(t) : t)));
 
   async function ask(q: string) {
     if (!q.trim() || running) return;
-    setQuery(q);
+    const id = Date.now();
+    setView("chat");
+    setInput("");
     setRunning(true);
-    setResult(null);
-    setError(null);
-    setSteps(idle());
+    setTurns((ts) => [...ts, { id, q, status: [] }]);
     try {
-      const res = await fetch("/api/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: q }),
-      });
+      const res = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: q }) });
       if (!res.ok || !res.body) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || `伺服器錯誤 ${res.status}`);
@@ -62,94 +53,118 @@ export default function Page() {
         for (const line of lines) {
           if (!line.trim()) continue;
           const e = JSON.parse(line) as StreamEvent;
-          if (e.type === "stage") {
-            setSteps((p) => ({ ...p, [e.stage]: { status: e.status === "start" ? "running" : "done", detail: e.detail } }));
+          if (e.type === "stage" && e.status === "done") {
+            update(id, (t) => ({ ...t, status: [...t.status, `${STAGE_TEXT[e.stage]}${e.detail ? `：${e.detail}` : ""}`] }));
           } else if (e.type === "result") {
-            setResult(e.result);
-          } else {
+            update(id, (t) => ({ ...t, result: e.result }));
+          } else if (e.type === "error") {
             throw new Error(e.message);
           }
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      update(id, (t) => ({ ...t, error: err instanceof Error ? err.message : String(err) }));
     } finally {
       setRunning(false);
     }
   }
 
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [turns]);
+
+  // 網址帶 ?sample=1 時自動問第一個建議問題
+  useEffect(() => {
+    if (autoRan.current) return;
+    autoRan.current = true;
+    if (new URLSearchParams(window.location.search).get("sample") === "1") ask(SUGGESTIONS[0].q);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const empty = turns.length === 0;
+
   return (
-    <main>
-      <h1>設備維護知識庫</h1>
-      <p className="lead">
-        用過去的維護履歷回答「這台設備出現這個異常，以前怎麼處理」。混合檢索找出相似紀錄，LLM 重排後只用達標的紀錄歸納答案，
-        每個步驟都標註引用列號，可以回到原始紀錄核對。
-      </p>
-      <div className="tags">
-        <span className="tag">BM25＋向量 RRF</span>
-        <span className="tag">LLM 重排＋門檻</span>
-        <span className="tag">引用核對</span>
-        <span className="tag">廠別範圍篩選</span>
-        <span className="tag">評測集</span>
-      </div>
+    <div className="app">
+      <aside className="side">
+        <div className="brand"><span className="logo">K</span>維護知識庫</div>
+        <button className="side-item" onClick={() => { setTurns([]); setView("chat"); }}>✎　新對話</button>
+        <button className={`side-item${view === "eval" ? " active" : ""}`} onClick={() => setView("eval")}>📊　評測結果</button>
+        <a className="side-item" href={`${REPO_URL}/blob/main/data/records.json`} target="_blank" rel="noreferrer">🗂　履歷資料</a>
+        <div className="label">對話</div>
+        <div className="history">
+          {turns.map((t) => <button key={t.id} className="side-item" onClick={() => setView("chat")}>{t.q}</button>)}
+        </div>
+        <div className="foot"><a href={REPO_URL} target="_blank" rel="noreferrer">GitHub</a>・資料為虛構</div>
+      </aside>
 
-      <div className="tabs">
-        <button className={tab === "ask" ? "active" : ""} onClick={() => setTab("ask")}>問答</button>
-        <button className={tab === "eval" ? "active" : ""} onClick={() => setTab("eval")}>評測結果</button>
-      </div>
+      <div className="main">
+        <div className="nav">
+          <span className="model">km-kb <span className="caret">▾</span></span>
+          <span className="spacer" />
+          <span className="mobile-links">
+            <button onClick={() => { setTurns([]); setView("chat"); }}>新對話</button>
+            <button onClick={() => setView(view === "eval" ? "chat" : "eval")}>{view === "eval" ? "問答" : "評測"}</button>
+          </span>
+        </div>
 
-      {tab === "eval" ? (
-        <EvalView />
-      ) : (
-        <>
-          <section className="card">
-            <form className="ask" onSubmit={(e) => { e.preventDefault(); ask(query); }}>
-              <input
-                ref={inputRef}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="輸入設備與異常現象，例如：空壓機排氣溫度過高跳機"
-                maxLength={200}
-                disabled={running}
-              />
-              <button className="primary" disabled={running || !query.trim()}>查詢</button>
-            </form>
-            <div className="chips">
-              {EXAMPLES.map((e) => (
-                <button key={e.q} className="chip" disabled={running} onClick={() => ask(e.q)}>
-                  <span className="k">{e.kind}</span>{e.q}
+        <div className="scroll">
+          {view === "eval" ? (
+            <EvalView />
+          ) : empty ? (
+            <div className="welcome">
+              <div className="hello"><span className="logo">K</span>km-kb</div>
+              <div className="sub">哪台設備出了什麼狀況？我從 282 筆維護履歷找以前的處理方式。</div>
+              <Composer input={input} setInput={setInput} ask={ask} running={running} />
+              <div className="suggest-label">⚡ 建議</div>
+              {SUGGESTIONS.map((s) => (
+                <button key={s.q} className="suggest" onClick={() => ask(s.q)} disabled={running}>
+                  <div className="t">{s.t}</div>
+                  <div className="s">{s.s}</div>
                 </button>
               ))}
             </div>
-            <p className="small" style={{ marginTop: 10 }}>
-              資料為 282 筆虛構維護履歷（一廠、二廠、三廠，12 種設備；三廠沒有輸送帶、天車、鍋爐）。
-              <a href={`${REPO_URL}/blob/main/data/records.json`} target="_blank" rel="noreferrer">檢視資料</a>
-            </p>
-          </section>
-
-          {(running || result || error) && (
-            <section className="card">
-              <div className="steps three">
-                {STEPS.map((s, i) => (
-                  <div key={s.key} className={`step ${steps[s.key].status}`}>
-                    <div className="no">步驟 {i + 1}</div>
-                    <div className="name">{s.name}</div>
-                    <div className="desc">{steps[s.key].detail ?? s.desc}</div>
+          ) : (
+            <div className="thread">
+              {turns.map((t) => (
+                <div key={t.id}>
+                  <div className="msg-user"><div>{t.q}</div></div>
+                  <div className="msg-ai">
+                    <span className="logo">K</span>
+                    <div className="content">
+                      <div className="who">km-kb<span>{t.result?.model ?? ""}</span></div>
+                      {!t.result && !t.error && (
+                        <div className="status">
+                          {t.status.map((s) => <span key={s}>✓ {s}</span>)}
+                          <span className="now">{["混合檢索中…", "重排中…", "綜合研判中…"][Math.min(t.status.length, 2)]}</span>
+                        </div>
+                      )}
+                      {t.error && <div className="md"><p className="err">⚠ {t.error}</p></div>}
+                      {t.result && <ResultView result={t.result} />}
+                    </div>
                   </div>
-                ))}
-              </div>
-              {error && <div className="error-box">查詢失敗：{error}</div>}
-            </section>
+                </div>
+              ))}
+              <div ref={bottom} />
+            </div>
           )}
+        </div>
 
-          {result && <ResultView result={result} />}
-        </>
-      )}
+        {view === "chat" && !empty && (
+          <div className="composer-wrap">
+            <Composer input={input} setInput={setInput} ask={ask} running={running} />
+            <div className="disclaimer">回答依據虛構的維護履歷，實際處理請依現場判斷。</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
-      <footer>
-        原型來自實際工作：工廠維護履歷知識庫的驗收測試與改善建議。公開版用虛構資料重新實作，不含任何公司資料或程式碼。
-        原始碼：<a href={REPO_URL} target="_blank" rel="noreferrer">GitHub</a>
-      </footer>
-    </main>
+function Composer({ input, setInput, ask, running }: { input: string; setInput: (s: string) => void; ask: (q: string) => void; running: boolean }) {
+  return (
+    <form className="composer" onSubmit={(e) => { e.preventDefault(); ask(input); }}>
+      <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="描述設備與異常現象…" maxLength={200} />
+      <button className="send" disabled={running || !input.trim()} aria-label="送出">↑</button>
+    </form>
   );
 }

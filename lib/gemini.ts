@@ -91,7 +91,7 @@ const SYNTH_PROMPT = `你是設備維護顧問，只能根據提供的維護履�
 - summary：一兩句結論，說明最可能的情況。
 - causes：可能原因，依履歷中出現次數由多到少，每項附引用列號 cites。
 - steps：建議處理步驟。把作法相同的多筆履歷歸納成同一步並列出所有列號；保留履歷中的零件、數值與參數，不可自行編造數值。
-- notes：注意事項或資料限制，例如紀錄來自其他廠區、樣本少；沒有就給空字串。
+- notes：注意事項或資料限制，例如樣本少；沒有就給空字串。範圍說明（例如某廠查無、改列他廠）畫面已另外顯示，不要重複。
 規則：cites 只能填提供的列號（R 開頭）。履歷沒有提到的內容不要寫。使用繁體中文。`;
 
 export async function synthesize(query: string, records: MaintRecord[], banner: string | null) {
