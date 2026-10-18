@@ -52,6 +52,10 @@
 2. `data-src/make_records.py`：以固定亂數種子組出 282 筆履歷（一廠、二廠、三廠；三廠沒有輸送帶、天車、鍋爐），並產生評測題與標準答案。
 3. `npm run embed`：預先計算履歷向量存成 `data/embeddings.json`，部署時隨程式打包，不需要向量資料庫。
 
+## 說明簡報
+
+8 頁 Marp 簡報：`/slides/index.html`（PDF：`/slides/deck.pdf`）。原始檔 `slides-src/deck.md`，操作畫面為正式環境截圖（`public/slides/img/`）；重建：`bash slides-src/build.sh`。
+
 ## 本機執行
 
 ```bash
